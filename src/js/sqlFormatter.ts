@@ -12,7 +12,7 @@ import { format } from 'sql-formatter';
 export const formatSqlText = (text: string, eol = '\n'): string => {
   try {
     const formatted = format(text, {
-      language: 'sql',
+      language: 'sqlite',
       tabWidth: 2,
       useTabs: false,
       keywordCase: 'upper',

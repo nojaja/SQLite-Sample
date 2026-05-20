@@ -56,4 +56,28 @@ LIMIT
     await expect.poll(async () => getSqlEditorValue(page)).toContain('PRIMARY KEY');
     await expect.poll(async () => getSqlEditorValue(page)).toContain('\n');
   });
+
+  test('== 演算子が保持されてフォーマットできる', async ({ page }) => {
+    const inputSql = 'SELECT * FROM table WHERE id == 1;';
+    await fillSqlEditor(page, inputSql);
+
+    await page.locator('#format-query-button').click({ noWaitAfter: true });
+
+    // == が = = に分割されないことを確認
+    const result = await getSqlEditorValue(page);
+    expect(result).toContain('id == 1');
+    expect(result).not.toContain('= =');
+  });
+
+  test('複数の == 演算子が保持されてフォーマットできる', async ({ page }) => {
+    const inputSql = 'SELECT a, b FROM table WHERE a == 1 AND b == 2;';
+    await fillSqlEditor(page, inputSql);
+
+    await page.locator('#format-query-button').click({ noWaitAfter: true });
+
+    const result = await getSqlEditorValue(page);
+    expect(result).toContain('a == 1');
+    expect(result).toContain('b == 2');
+    expect(result).not.toContain('= =');
+  });
 });
