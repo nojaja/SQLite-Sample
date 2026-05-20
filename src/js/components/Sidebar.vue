@@ -149,29 +149,53 @@
           {{ isDatasetDropInvalid ? 'この場所には .csv のみドロップできます' : 'CSVファイルをドロップしてデータセット登録' }}
         </div>
         <div v-if="!datasetTables.length" class="tree-empty">データセットはありません</div>
-        <div v-for="name in datasetTables" :key="name" class="tree-item">
+        <div v-for="table in datasetTables" :key="table.name" class="tree-item">
           <div class="tree-label dataset-node" style="display:flex;align-items:center;justify-content:space-between">
             <span
               class="tree-label dataset"
-              :data-name="name"
-              :data-dataset-table-name="name"
+              :data-name="table.name"
+              :data-dataset-table-name="table.name"
               style="display:flex;align-items:center;gap:4px"
               draggable="true"
-              @dragstart="onTreeItemDragStart($event, name)"
-              @contextmenu.prevent="onDatasetTableContextMenu($event, name)"
+              @dragstart="onTreeItemDragStart($event, table.name)"
+              @click="toggleDatasetTableColumnsNode(table.name)"
+              @contextmenu.prevent="onDatasetTableContextMenu($event, table.name, table.columns)"
             >
+              <span class="material-symbols-outlined toggle-icon">
+                {{ datasetTableNodeOpen[table.name] ? 'expand_more' : 'chevron_right' }}
+              </span>
               <span class="material-symbols-outlined icon">dataset</span>
-              {{ name }}
+              {{ table.name }}
             </span>
             <button
               class="menu-button"
-              :data-delete-dataset-table="name"
-              :title="`データセット '${name}' を削除`"
+              :data-delete-dataset-table="table.name"
+              :title="`データセット '${table.name}' を削除`"
               style="font-size:14px"
-              @click.stop="$emit('delete-dataset', name)"
+              @click.stop="$emit('delete-dataset', table.name)"
             >
               <span class="material-symbols-outlined">delete</span>
             </button>
+          </div>
+          <div class="tree-items" :style="{ display: datasetTableNodeOpen[table.name] ? '' : 'none' }">
+            <div
+              v-for="columnName in table.columns"
+              :key="`dataset__${table.name}__${columnName}`"
+              class="tree-item"
+            >
+              <div
+                class="tree-label Columns"
+                data-db-alias="dataset"
+                :data-table-name="table.name"
+                :data-column-name="columnName"
+                draggable="true"
+                @dragstart="onTreeItemDragStart($event, columnName)"
+                @contextmenu.prevent="onDatasetColumnContextMenu($event, table.name, columnName, table.columns)"
+              >
+                <span class="material-symbols-outlined icon">view_column</span>
+                {{ columnName }}
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -651,8 +675,9 @@ const onColumnContextMenu = (
  * 実装理由: データセットテーブル向けの CRUD 文挿入を提供するため
  * @param e マウスイベント
  * @param tableName テーブル名
+ * @param columns テーブルの全カラム配列
  */
-const onDatasetTableContextMenu = (e: MouseEvent, tableName: string) => {
+const onDatasetTableContextMenu = (e: MouseEvent, tableName: string, columns: string[]) => {
   openDbObjectContextMenu(e, {
     source: 'dataset',
     alias: 'dataset',
@@ -660,7 +685,33 @@ const onDatasetTableContextMenu = (e: MouseEvent, tableName: string) => {
     objectType: 'table',
     tableName,
     columnName: '',
-    columns: [],
+    columns,
+  });
+};
+
+/**
+ * 処理名: データセットカラム右クリックメニュー表示
+ * 処理概要: データセット配下のカラム項目右クリック時に SQL 挿入メニューを開く
+ * 実装理由: Databases ツリーのカラムと同等の操作を提供するため
+ * @param e マウスイベント
+ * @param tableName テーブル名
+ * @param columnName カラム名
+ * @param columns テーブルの全カラム配列
+ */
+const onDatasetColumnContextMenu = (
+  e: MouseEvent,
+  tableName: string,
+  columnName: string,
+  columns: string[]
+) => {
+  openDbObjectContextMenu(e, {
+    source: 'dataset',
+    alias: 'dataset',
+    name: columnName,
+    objectType: 'column',
+    tableName,
+    columnName,
+    columns,
   });
 };
 
@@ -1004,7 +1055,18 @@ const onWindowKeydown = (e: KeyboardEvent) => {
 
 // ---- データセットツリー ----
 const datasetTreeOpen = ref(true);
-const datasetTables = ref<string[]>([]);
+const datasetTables = ref<Array<{ name: string; columns: string[] }>>([]);
+const datasetTableNodeOpen = reactive<Record<string, boolean>>({});
+
+/**
+ * 処理名: データセットテーブルカラムノード開閉トグル
+ * 処理概要: 指定データセットテーブル配下のカラム一覧展開状態を切り替える
+ * 実装理由: データセットテーブル配下にカラムツリーを表示するため
+ * @param tableName テーブル名
+ */
+const toggleDatasetTableColumnsNode = (tableName: string) => {
+  datasetTableNodeOpen[tableName] = !datasetTableNodeOpen[tableName];
+};
 
 /**
  * 処理名: データセットツリー開閉トグル
@@ -1084,8 +1146,21 @@ const updateDatabaseTree = (schemas: typeof dbSchemas.value) => {
  * 実装理由: CSV登録・削除後にデータセット一覧を再描画するため
  * @param tables 更新するテーブル名配列
  */
-const updateDatasetTree = (tables: string[]) => {
-  datasetTables.value = tables ?? [];
+const updateDatasetTree = (tables: string[] | Array<{ name: string; columns?: string[] }>) => {
+  if (!tables?.length) {
+    datasetTables.value = [];
+    return;
+  }
+
+  if (typeof tables[0] === 'string') {
+    datasetTables.value = (tables as string[]).map((name) => ({ name, columns: [] }));
+    return;
+  }
+
+  datasetTables.value = (tables as Array<{ name: string; columns?: string[] }>).map((table) => ({
+    name: table.name,
+    columns: table.columns ?? [],
+  }));
 };
 
 onMounted(() => {

@@ -153,6 +153,22 @@ const getDisplaySchemas = (dbInst: SQLiteManager) => {
 };
 
 /**
+ * 処理名: データセットツリー表示データ取得
+ * 処理概要: データセットテーブル名とカラム配列をサイドバー表示向けに返す
+ * 実装理由: データセット配下でもテーブルごとのカラムツリーを表示するため
+ * @param dbInst SQLiteManager インスタンス
+ * @returns テーブル名とカラム配列の一覧
+ */
+const getDatasetTreeTables = (dbInst: SQLiteManager): Array<{ name: string; columns: string[] }> => {
+    const schema = dbInst.getDatabaseSchema(DATASET_DB_ALIAS);
+    const tableNames = schema.tables ?? [];
+    return tableNames.map((name) => ({
+        name,
+        columns: schema.tableColumns?.[name] ?? [],
+    }));
+};
+
+/**
  * 処理名: ツリー再描画
  * 処理概要: DB ツリーとデータセットツリーを最新状態で再描画する
  * 実装理由: DB 変更後に常に同一手順でサイドバーを更新するため
@@ -162,8 +178,9 @@ const refreshTrees = async () => {
         const dbInst = await getDb();
         const displaySchemas = getDisplaySchemas(dbInst);
         const datasetTablesList = listDatasetTables(dbInst);
+        const datasetTreeTables = getDatasetTreeTables(dbInst);
         sidebarRef.value?.updateDatabaseTree(displaySchemas);
-        sidebarRef.value?.updateDatasetTree(datasetTablesList);
+        sidebarRef.value?.updateDatasetTree(datasetTreeTables);
         updateDbObjectSuggestions(displaySchemas, DATASET_DB_ALIAS, datasetTablesList);
     } catch { /* DB未初期化時は何もしない */ }
 };
@@ -615,7 +632,7 @@ const importDatasetCsv = async (file: File): Promise<void> => {
     try {
         const tableName = await importCsvFileAsDataset(dbInst, file);
         showSuccess(`データセット「${tableName}」を登録しました`);
-        sidebarRef.value?.updateDatasetTree(listDatasetTables(dbInst));
+        sidebarRef.value?.updateDatasetTree(getDatasetTreeTables(dbInst));
     } catch (e) {
         showError((e instanceof Error ? e.message : String(e)) || 'CSVの読み込みに失敗しました');
     }
@@ -643,7 +660,7 @@ const handleDeleteDataset = async (name: string) => {
         const dbInst = await getDb();
         deleteDatasetTable(dbInst, name);
         showSuccess(`データセット「${name}」を削除しました`);
-        sidebarRef.value?.updateDatasetTree(listDatasetTables(dbInst));
+        sidebarRef.value?.updateDatasetTree(getDatasetTreeTables(dbInst));
     } catch (e) {
         showError(`データセット削除失敗: ${(e as Error).message}`);
     }
@@ -803,7 +820,7 @@ const handleRegisterDataset = async () => {
     try {
         const registered = registerRowsAsDatasetTable(dbInst, name, resultData.columns, resultData.data);
         showSuccess(`Dataset '${registered}' registered`);
-        sidebarRef.value?.updateDatasetTree(listDatasetTables(dbInst));
+        sidebarRef.value?.updateDatasetTree(getDatasetTreeTables(dbInst));
     } catch (e) {
         showError((e instanceof Error ? e.message : String(e)) || 'Failed to register dataset');
     }
@@ -910,7 +927,7 @@ onMounted(async () => {
         dbReady = dbInitPromise;
         db = await dbInitPromise;
         ensureDatasetDatabase(db);
-        sidebarRef.value?.updateDatasetTree(listDatasetTables(db));
+        sidebarRef.value?.updateDatasetTree(getDatasetTreeTables(db));
     }
 });
 
