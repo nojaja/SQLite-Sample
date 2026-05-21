@@ -19,5 +19,6 @@ module.exports = {
   },
   collectCoverageFrom: [
     'src/js/datasetDb.ts',
+    'src/js/queryTabStorage.ts',
   ],
 };

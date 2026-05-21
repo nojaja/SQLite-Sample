@@ -10,6 +10,7 @@ interface Window {
   __sqlEditorBridge: {
     getValue: () => string;
     setValue: (v: string) => void;
+    runFormatMenuAction: () => Promise<void>;
   };
 }
 

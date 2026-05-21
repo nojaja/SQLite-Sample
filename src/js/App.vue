@@ -67,10 +67,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, nextTick } from 'vue';
-import MenuBar from './components/MenuBar.vue';
-import Sidebar from './components/Sidebar.vue';
-import MainArea from './components/MainArea.vue';
-import StatusBar from './components/StatusBar.vue';
+import { MenuBar, Sidebar, MainArea, StatusBar } from './components';
 import { useColumnSplitter } from './composables/useColumnSplitter';
 import {
     DATASET_DB_ALIAS,

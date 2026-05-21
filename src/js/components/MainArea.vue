@@ -36,11 +36,16 @@
       <MonacoEditor
         id="sql-editor"
         :value="activeTabQuery"
-        @change="updateActiveTabQuery"
         @editorDidMount="onEditorMounted"
         language="sql"
         :options="monacoOptions"
         style="width: 100%; height: 100%;"
+      />
+      <iframe
+        ref="storageSyncFrameEl"
+        aria-hidden="true"
+        tabindex="-1"
+        style="display: none;"
       />
     </div>
 
@@ -109,11 +114,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, nextTick, onBeforeUnmount } from 'vue';
+import { ref, reactive, computed, nextTick, onMounted, onBeforeUnmount } from 'vue';
 import MonacoEditor from 'monaco-editor-vue3';
 import * as monaco from 'monaco-editor';
 import { formatSqlText } from '../sqlFormatter';
 import { formatIdentifier } from '../datasetDb';
+import { saveQueryTab, removeQueryTab, restoreQueryTabs, isQueryTabKey } from '../queryTabStorage';
 import { TabulatorFull as Tabulator } from 'tabulator-tables';
 import 'tabulator-tables/dist/css/tabulator.min.css';
 import { useRowSplitter } from '../composables/useRowSplitter';
@@ -141,7 +147,13 @@ const queryTabs = ref<QueryTab[]>([{ id: 'query1', label: 'Query1', query: '' }]
 const activeQueryTabId = ref('query1');
 let queryTabSerial = 2;
 const sqlEditorRef = ref<monaco.editor.IStandaloneCodeEditor | null>(null);
+const storageSyncFrameEl = ref<HTMLIFrameElement | null>(null);
 const draggedQueryTabId = ref<string | null>(null);
+let isApplyingExternalQueryChange = false;
+let queryStorageSyncTimer: number | undefined;
+let storageSyncFrameWindow: Window | null = null;
+const LOCAL_STORAGE_DIRECT_CHANGE_EVENT = 'sqlite-webclient:local-storage-direct-change';
+let restoreLocalStorageInterceptors: (() => void) | null = null;
 
 /** Monacoエディタの設定オプション */
 const monacoOptions = {
@@ -164,14 +176,47 @@ const activeTabQuery = computed<string>(
 );
 
 /**
+ * 処理名: アクティブクエリタブ取得
+ * 処理概要: 現在アクティブなクエリタブを返す
+ * 実装理由: クエリ更新処理の参照先を 1 箇所に集約するため
+ * @returns アクティブなクエリタブ。存在しない場合は undefined
+ */
+const getActiveQueryTab = (): QueryTab | undefined => {
+  return queryTabs.value.find(t => t.id === activeQueryTabId.value);
+};
+
+/**
+ * 処理名: 外部変更エディタ反映
+ * 処理概要: 外部同期で確定した SQL 文字列を Monaco エディタへ反映する
+ * 実装理由: storage 同期時に change ハンドラの再保存ループを防ぐため
+ * @param value エディタへ反映する SQL 文字列
+ */
+const applyQueryToEditor = (value: string): void => {
+  const editor = sqlEditorRef.value;
+  if (!editor) return;
+  if (editor.getValue() === value) return;
+  isApplyingExternalQueryChange = true;
+  try {
+    editor.setValue(value);
+  } finally {
+    isApplyingExternalQueryChange = false;
+  }
+};
+/**
  * 処理名: アクティブタブのクエリ更新
- * 処理概要: Monacoエディタの内容変更時にアクティブタブの query を更新する
- * 実装理由: Monacoの @change イベントハンドラとして使用するため
+ * 処理概要: Monacoエディタの内容変更時にアクティブタブの query を更新し localStorage に保存する
+ * 実装理由: Monacoの onDidChangeModelContent イベントハンドラとして使用するため
  * @param value Monacoエディタの現在内容
  */
 const updateActiveTabQuery = (value: string) => {
-  const tab = queryTabs.value.find(t => t.id === activeQueryTabId.value);
-  if (tab) tab.query = value;
+  const tab = getActiveQueryTab();
+  if (!tab) return;
+  if (isApplyingExternalQueryChange) {
+    tab.query = value;
+    return;
+  }
+  tab.query = value;
+  saveQueryTab(window.localStorage, tab.label, value);
 };
 
 /**
@@ -252,13 +297,15 @@ const onQueryTabDragEnd = () => {
 
 /**
  * 処理名: クエリタブ閉じる
- * 処理概要: 指定 ID のクエリタブを削除し、必要に応じて隣接タブにフォーカスを移す
+ * 処理概要: 指定 ID のクエリタブを削除し localStorage エントリも除去する。必要に応じて隣接タブにフォーカスを移す
  * 実装理由: タブ閉じるボタン操作に対応するため
  * @param id 閉じるタブ ID
  */
 const closeQueryTab = (id: string) => {
   const idx = queryTabs.value.findIndex(t => t.id === id);
   if (idx === -1) return;
+  const tab = queryTabs.value[idx];
+  removeQueryTab(window.localStorage, tab.label);
   queryTabs.value.splice(idx, 1);
   if (activeQueryTabId.value === id) {
     const next = queryTabs.value[Math.max(0, idx - 1)];
@@ -296,8 +343,9 @@ const getActiveQuery = (): string => {
  * @param value 設定する SQL 文字列
  */
 const setActiveQuery = (value: string) => {
-  const tab = queryTabs.value.find(t => t.id === activeQueryTabId.value);
-  if (tab) tab.query = value;
+  const tab = getActiveQueryTab();
+  if (!tab) return;
+  tab.query = value;
 };
 
 /**
@@ -307,7 +355,7 @@ const setActiveQuery = (value: string) => {
  * @param value 追記する SQL 文字列
  */
 const appendActiveQuery = (value: string) => {
-  const tab = queryTabs.value.find(t => t.id === activeQueryTabId.value);
+  const tab = getActiveQueryTab();
   if (!tab || !value) return;
   const needsSeparator = tab.query.trim().length > 0 && !tab.query.endsWith('\n');
   tab.query = `${tab.query}${needsSeparator ? '\n' : ''}${value}\n`;
@@ -1129,6 +1177,10 @@ const insertTextAtClientPoint = (text: string, _clientX: number, _clientY: numbe
  */
 const onEditorMounted = (editor: monaco.editor.IStandaloneCodeEditor) => {
   sqlEditorRef.value = editor;
+  editor.onDidChangeModelContent(() => {
+    const value = editor.getValue();
+    updateActiveTabQuery(value);
+  });
   editor.addAction({
     id: 'run-query-shortcut',
     label: 'Run Query',
@@ -1341,8 +1393,214 @@ const queryEditorEl = ref<HTMLElement | null>(null);
 const getQueryEditorElement = (): HTMLElement | null => queryEditorEl.value;
 useRowSplitter(rowSplitterEl, getQueryEditorElement);
 
+/**
+ * 処理名: storage イベントハンドラ
+ * 処理概要: 別ウィンドウからの localStorage 変更を検知し該当タブのクエリを更新する
+ * 実装理由: 複数ウィンドウ編集時に内容がデグレードしないよう同期するため
+ * @param event StorageEvent
+ */
+const applyStorageChange = (event: StorageEvent): void => {
+  if (!event.key || !isQueryTabKey(event.key)) return;
+  const newQuery = event.newValue ?? '';
+  applyStorageChangeByKey(event.key, newQuery);
+};
+
+/**
+ * 処理名: storage 変更適用
+ * 処理概要: 指定キーと値をクエリタブへ反映する
+ * 実装理由: storage イベントと direct-change イベントで共通化するため
+ * @param key localStorage キー
+ * @param newQuery 変更後クエリ
+ */
+const applyStorageChangeByKey = (key: string, newQuery: string): void => {
+  const tab = queryTabs.value.find(t => t.label === key);
+  if (!tab || tab.query === newQuery) return;
+  tab.query = newQuery;
+};
+
+/**
+ * 処理名: direct-storage-change イベントハンドラ
+ * 処理概要: 同一ページで発生した localStorage 変更通知を適用する
+ * 実装理由: storage イベントが同一ドキュメントへ届かないため
+ * @param event CustomEvent
+ */
+const handleDirectStorageChange = (event: Event): void => {
+  const detail = (event as CustomEvent<{ key: string; newValue: string | null }>).detail;
+  if (!detail?.key) return;
+  applyStorageChangeByKey(detail.key, detail.newValue ?? '');
+};
+
+/**
+ * 処理名: storage イベントハンドラ
+ * 処理概要: 別ウィンドウまたは隠し iframe からの localStorage 変更を検知し該当タブのクエリを更新する
+ * 実装理由: DevTools による同一ページ変更も別ドキュメント側で受けるため
+ * @param event StorageEvent
+ */
+const handleStorageEvent = (event: StorageEvent): void => {
+  applyStorageChange(event);
+};
+
+/**
+ * 処理名: フォーカス時ストレージ同期
+ * 処理概要: ウィンドウがフォーカスを取得した際に localStorage の最新値をタブへ反映する
+ * 実装理由: DevTools など同一ウィンドウ内の変更は storage イベントが届かないため
+ */
+const syncFromStorageSnapshot = (): void => {
+  for (const tab of queryTabs.value) {
+    const stored = window.localStorage.getItem(tab.label) ?? '';
+    if (tab.query === stored) continue;
+    tab.query = stored;
+  }
+};
+
+/**
+ * 処理名: storage 同期 iframe 接続
+ * 処理概要: 隠し iframe に storage イベントリスナを接続する
+ * 実装理由: 同一ページの DevTools localStorage 編集を別ドキュメント経由で受けるため
+ */
+const attachStorageSyncFrame = (): void => {
+  const frameWindow = storageSyncFrameEl.value?.contentWindow ?? null;
+  if (!frameWindow || storageSyncFrameWindow === frameWindow) return;
+  if (storageSyncFrameWindow) {
+    storageSyncFrameWindow.removeEventListener('storage', handleStorageEvent);
+  }
+  storageSyncFrameWindow = frameWindow;
+  storageSyncFrameWindow.addEventListener('storage', handleStorageEvent);
+};
+
+/**
+ * 処理名: storage 同期 iframe 切断
+ * 処理概要: 隠し iframe の storage イベントリスナを解除する
+ * 実装理由: コンポーネント破棄後に不要な参照を残さないため
+ */
+const detachStorageSyncFrame = (): void => {
+  if (!storageSyncFrameWindow) return;
+  storageSyncFrameWindow.removeEventListener('storage', handleStorageEvent);
+  storageSyncFrameWindow = null;
+};
+
+/**
+ * 処理名: localStorage 直接変更監視開始
+ * 処理概要: setItem/removeItem をフックし同一ページ変更をカスタムイベントで通知する
+ * 実装理由: Playwright と同一ページ内操作で即時同期するため
+ */
+const startDirectLocalStorageSync = (): void => {
+  if (restoreLocalStorageInterceptors) return;
+  const storagePrototype = Storage.prototype as Storage & {
+    setItem: (key: string, value: string) => void;
+    removeItem: (key: string) => void;
+  };
+  const originalSetItem = storagePrototype.setItem;
+  const originalRemoveItem = storagePrototype.removeItem;
+
+  /**
+   * 処理名: localStorage setItem フック
+   * 処理概要: 同一ページの setItem 実行後に direct-change イベントを非同期通知する
+   * 実装理由: setItem 呼び出し自体をブロックしないため
+   * @param key localStorage キー
+   * @param value 保存値
+   */
+  storagePrototype.setItem = function setItemPatched(key: string, value: string): void {
+    originalSetItem.call(this, key, value);
+    if (this !== window.localStorage || !isQueryTabKey(key)) return;
+    window.setTimeout(() => {
+      window.dispatchEvent(new CustomEvent(LOCAL_STORAGE_DIRECT_CHANGE_EVENT, {
+        detail: { key, newValue: value },
+      }));
+    }, 0);
+  };
+  /**
+   * 処理名: localStorage removeItem フック
+   * 処理概要: 同一ページの removeItem 実行後に direct-change イベントを非同期通知する
+   * 実装理由: removeItem 呼び出し自体をブロックしないため
+   * @param key localStorage キー
+   */
+  storagePrototype.removeItem = function removeItemPatched(key: string): void {
+    originalRemoveItem.call(this, key);
+    if (this !== window.localStorage || !isQueryTabKey(key)) return;
+    window.setTimeout(() => {
+      window.dispatchEvent(new CustomEvent(LOCAL_STORAGE_DIRECT_CHANGE_EVENT, {
+        detail: { key, newValue: null },
+      }));
+    }, 0);
+  };
+
+  /**
+   * 処理名: localStorage フック復元
+   * 処理概要: setItem/removeItem を元の実装へ戻す
+   * 実装理由: コンポーネント破棄時にグローバル変更を残さないため
+   */
+  restoreLocalStorageInterceptors = () => {
+    storagePrototype.setItem = originalSetItem;
+    storagePrototype.removeItem = originalRemoveItem;
+  };
+};
+
+/**
+ * 処理名: localStorage 直接変更監視停止
+ * 処理概要: setItem/removeItem のフックを解除する
+ * 実装理由: コンポーネント破棄時にグローバル変更を元へ戻すため
+ */
+const stopDirectLocalStorageSync = (): void => {
+  restoreLocalStorageInterceptors?.();
+  restoreLocalStorageInterceptors = null;
+};
+
+/**
+ * 処理名: Query Storage 同期開始
+ * 処理概要: storage スナップショット同期の定期監視と補助イベントを開始する
+ * 実装理由: storage イベント未達時でもクエリ内容を継続同期するため
+ */
+const startQueryStorageSync = (): void => {
+  if (queryStorageSyncTimer === undefined) {
+    queryStorageSyncTimer = window.setInterval(syncFromStorageSnapshot, 500);
+  }
+  window.addEventListener('storage', handleStorageEvent);
+  window.addEventListener(LOCAL_STORAGE_DIRECT_CHANGE_EVENT, handleDirectStorageChange);
+  window.addEventListener('focus', syncFromStorageSnapshot);
+  document.addEventListener('visibilitychange', syncFromStorageSnapshot);
+  attachStorageSyncFrame();
+  startDirectLocalStorageSync();
+};
+
+/**
+ * 処理名: Query Storage 同期停止
+ * 処理概要: storage スナップショット同期の定期監視と補助イベントを停止する
+ * 実装理由: コンポーネント破棄後に不要な監視を残さないため
+ */
+const stopQueryStorageSync = (): void => {
+  if (queryStorageSyncTimer !== undefined) {
+    window.clearInterval(queryStorageSyncTimer);
+    queryStorageSyncTimer = undefined;
+  }
+  window.removeEventListener('storage', handleStorageEvent);
+  window.removeEventListener(LOCAL_STORAGE_DIRECT_CHANGE_EVENT, handleDirectStorageChange);
+  window.removeEventListener('focus', syncFromStorageSnapshot);
+  document.removeEventListener('visibilitychange', syncFromStorageSnapshot);
+  detachStorageSyncFrame();
+  stopDirectLocalStorageSync();
+};
+
+onMounted(() => {
+  const saved = restoreQueryTabs(window.localStorage);
+  if (saved.length > 0) {
+    queryTabs.value = saved.map((d, i) => ({
+      id: `query${i + 1}`,
+      label: d.label,
+      query: d.query,
+    }));
+    queryTabSerial = saved.length + 1;
+    activeQueryTabId.value = queryTabs.value[0].id;
+  }
+  startQueryStorageSync();
+  nextTick(() => {
+    attachStorageSyncFrame();
+  });
+});
+
 onBeforeUnmount(() => {
   destroyAllTabulatorInstances();
+  stopQueryStorageSync();
 });
 
 syncResultTabOrder();
