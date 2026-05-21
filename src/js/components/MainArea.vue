@@ -379,6 +379,8 @@ const tabulatorOptions = {
   selectableRows: false,
 };
 
+const RESULT_COLUMN_HEADER_BOUND_ATTR = 'data-results-column-dnd-bound';
+
 /**
  * 処理名: Tabulator表示要素取得
  * 処理概要: 指定テーブルIDに対応するTabulator表示要素を返す
@@ -388,6 +390,57 @@ const tabulatorOptions = {
  */
 const getTabulatorHostElement = (tableId: string): HTMLElement | null => {
   return document.getElementById(`tabulator-${tableId}`);
+};
+
+/**
+ * 処理名: ResultsヘッダD&D開始ハンドラ
+ * 処理概要: Resultsカラムの dragstart 時にクエリエディタ挿入用データを設定する
+ * 実装理由: DBツリー/Datasetツリーと同じ drop 経路を再利用してカラム名を挿入するため
+ * @param e ドラッグイベント
+ * @param columnName カラム名
+ */
+const onResultsColumnDragStart = (e: DragEvent, columnName: string): void => {
+  if (!e.dataTransfer) return;
+  const name = columnName.trim();
+  if (!name) return;
+  e.dataTransfer.setData('application/x-sqlite-webclient-tree-item-name', name);
+  e.dataTransfer.setData('text/plain', name);
+  e.dataTransfer.effectAllowed = 'copy';
+};
+
+/**
+ * 処理名: Resultsヘッダdragstartハンドラ生成
+ * 処理概要: 指定カラム名を転送する dragstart ハンドラを返す
+ * 実装理由: 無名関数を避けてJSDoc要件を満たしつつ処理を再利用するため
+ * @param columnName カラム名
+ * @returns dragstart イベントハンドラ
+ */
+const createResultsHeaderDragStartHandler = (columnName: string) => {
+  return (event: Event) => {
+    onResultsColumnDragStart(event as DragEvent, columnName);
+  };
+};
+
+/**
+ * 処理名: ResultsヘッダDOMへD&Dを関連付ける
+ * 処理概要: `.tabulator-col` 要素を draggable にし dragstart ハンドラを登録する
+ * 実装理由: Resultsカラム名をクエリエディタへ直接D&Dできるようにするため
+ * @param hostElement Tabulatorホスト要素
+ */
+const bindResultsColumnDragSources = (hostElement: HTMLElement) => {
+  const headerElements = Array.from(hostElement.querySelectorAll('.tabulator-col[tabulator-field]')) as HTMLElement[];
+  headerElements.forEach((headerElement) => {
+    if (headerElement.getAttribute(RESULT_COLUMN_HEADER_BOUND_ATTR) === '1') return;
+    const fieldName = String(headerElement.getAttribute('tabulator-field') ?? '').trim();
+    const titleName = String((headerElement.querySelector('.tabulator-col-title') as HTMLElement | null)?.innerText ?? '').trim();
+    const columnName = fieldName || titleName;
+    if (!columnName) return;
+
+    headerElement.draggable = true;
+    const handleDragStart = createResultsHeaderDragStartHandler(columnName);
+    headerElement.addEventListener('dragstart', handleDragStart);
+    headerElement.setAttribute(RESULT_COLUMN_HEADER_BOUND_ATTR, '1');
+  });
 };
 
 /**
@@ -435,6 +488,10 @@ const renderTabulatorForTable = (tableId: string) => {
     ...tabulatorOptions,
     columns: buildTabulatorColumns(tableData.columns),
     data: tableData.data,
+  });
+  bindResultsColumnDragSources(hostElement);
+  instance.on('tableBuilt', () => {
+    bindResultsColumnDragSources(hostElement);
   });
   tabulatorInstances.set(tableId, instance);
 };
